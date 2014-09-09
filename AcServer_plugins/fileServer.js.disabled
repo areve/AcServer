@@ -1,0 +1,173 @@
+
+var path = require("path"),
+	fs = require("fs"),
+	url = require("url");
+
+module.exports = function (context, servePath) {
+	servePath = servePath || '.';
+	var pathname = url.parse(context.request.url).pathname;
+	if (isHidden(pathname)) {
+		return context.send(404);
+	}
+
+	var fullPath = path.join(
+		path.resolve(context.config.rootDirectory, servePath),
+		decodeURIComponent(url.parse(context.request.url).pathname));
+	if (fs.existsSync(fullPath)) {
+		fs.stat(fullPath, function(err, stat) {
+			if (err) {
+				return context.send(404);
+			}
+
+			if (stat.isFile()) {
+				return context.sendFile(fullPath);
+			} else {
+				// if not listing directories send 404
+				if (!context.config.listDirectories) {
+					return context.send(404);
+				}
+
+				if (context.request.url.slice(-1) !== '/') {
+					return context.send(302, context.getRedirectUrl() + '/');
+				}
+
+				if (context.config.indexFile) {
+					var indexFullPath = fullPath + context.config.indexFile;
+					if (fs.existsSync(indexFullPath) && fs.statSync(indexFullPath).isFile()) {
+						return context.sendFile(indexFullPath);
+					}
+				}
+
+				getDirList(fullPath, function(err, data) {
+					if (err) return context.send(500, null, err);
+
+					var lastModifiedString = new Date(data.lastModified).toUTCString();
+					var ifModifiedSinceString = context.request.headers["if-modified-since"];
+					if (context.config.useIfModifiedSinceString && ifModifiedSinceString && lastModifiedString === ifModifiedSinceString) {
+						context.writeHead(304);
+						return context.close();
+					}
+
+					context.headers["Last-Modified"] = lastModifiedString;
+					return context.send(null, dirListToHtml(data));
+				});
+			}
+		});
+	} else {
+		context.send(404);
+	}
+
+	return true;
+
+
+	/**
+	 * Gets directory listing as an object
+	 */
+	function getDirList(dirPath, cb) {
+		fs.readdir(dirPath, function(err, files) {
+			if (err) return cb(err);
+
+			var data = {
+				path: url.parse(context.request.url).pathname,
+				list: [],
+				// if config file modified date is also included, because of filters
+				lastModified: context.config._configModified
+			};
+
+			if (data.path !== '/') {
+				data.parent = '..';
+			}
+
+			// show directory listing
+			for (var i = 0, l = files.length; i < l; i++) {
+				var file = files[i];
+				if (!isHidden(url.resolve(data.path, file))) {
+					var stat = null;
+					try {
+						stat = fs.statSync(fullPath + file);
+					} catch(ex){
+						// statSync will fail if the folder is corrupt, or is a missing symbolic link etc.
+					}
+
+					if (stat) {
+						data.lastModified = Math.max(stat.mtime, data.lastModified);
+						if (stat.isDirectory()) {
+							data.list.push({ name: file, path: file, type: 'directory' });
+						} else {
+							data.list.push({ name: file, path: file, type: 'file' });
+						}
+					} else {
+						data.list.push({ name: file, path: file, type: 'unknown' });
+					}
+				}
+			}
+
+			return cb(null, data);
+		});
+	}
+
+	/**
+	 * Converts directory list data to html
+	 */
+	function dirListToHtml(data) {
+		var html = [];
+		html.push('<!DOCTYPE html>\n');
+		html.push('<html>\n');
+		html.push('\t<head>\n');
+		html.push('\t\t<title>' + context.htmlEncode(data.path) + '</title>\n');
+		html.push('\t\t<meta charset="UTF-8" />\n');
+		html.push('\t</head>\n');
+		html.push('\t<body>\n');
+		html.push('\t\t<div class="directory-listing">\n');
+
+		// show link to parent directory except for root
+		if (data.path !== '/') {
+			html.push('\t\t\t<div class="parent directory"><a href="..">..</a></div>\n');
+		}
+
+		for (var i in data.list) {
+			var item = data.list[i];
+			if (item.type === 'directory') {
+				// directory urls need a trailing slash
+				html.push('\t\t\t<div class="directory"><a href="' +
+					context.htmlEncode(encodeURIComponent(item.path)) + '/">' +
+					context.htmlEncode(item.path) +
+					'/</a></div>\n');
+			} else if (item.type === 'file') {
+				html.push('\t\t\t<div class="file"><a href="' +
+					context.htmlEncode(encodeURIComponent(item.path)) + '">' +
+					context.htmlEncode(item.path) +
+					'</a></div>\n');
+			} else {
+				html.push('\t\t\t<div class="unknown">' +
+					context.htmlEncode(item.path) +
+					'</div>\n');
+			}
+		}
+
+		html.push('\t\t</div>\n');
+		html.push('\t</body>\n');
+		html.push('</html>');
+
+		return html.join('');
+	}
+	/**
+	 * Determine whether this server relative path should be hidden from the
+	 * client.
+	 */
+	function isHidden(path) {
+		for (var i = 0; i < context.config._hiddenCompiled.length; i++) {
+			if (context.config._hiddenCompiled[i] instanceof RegExp) {
+				if(context.config._hiddenCompiled[i].test(path)) {
+					return true;
+				}
+			} else {
+				if(context.config._hiddenCompiled[i] === path) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+}

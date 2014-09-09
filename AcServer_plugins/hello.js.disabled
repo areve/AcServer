@@ -1,0 +1,11 @@
+// an example AcServer plugin, if the address ends in ?hello it does something
+// otherwise nothing
+
+// if the plugin returns true no further plugins will be executed
+
+module.exports = function(context) {
+	if (/\?hello$/i.test(context.request.url)) {
+		context.send(200, 'hello plugin says hello from ' + context.request.url);
+		return true;
+	}
+}
