@@ -496,7 +496,7 @@
      * match it's modified date
      */
     function loadConfig(){
-        var configPath = (config && config._configPath) || scriptName + '.conf';
+        var configPath = (config && config._configPath) || defaultConfig._configPath || scriptName + '.conf';
 
         if (fs.existsSync(configPath)) {
             var mtime = fs.statSync(configPath).mtime;
